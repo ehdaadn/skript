@@ -1,0 +1,91 @@
+#!/bin/bash
+#set -eof
+
+
+BASEDIR=$HOME
+
+
+PKGDIR=$BASEDIR/paket
+VERSION="$(date +%Y%m%d),$(($(gdate +%-H)*60 + $(date +%M)))"
+PACKAGE=op5-nrpe-plugins-contrib
+DESCRIPTION="op5 nrpe plugins-contrib"
+#ADIR=$BASEDIR/work/puppet/op5-nagios-plugins/stockholm/plugins
+ADIR=$BASEDIR/puppet/plugins_contrib/stockholm/plugins
+BDIR=$(mktemp -d)
+CDIR=$(mktemp -d)
+REPO=/home/xanddah/wip/repo
+REMREPO=esekilxxen100:/proj/kiadm/prod/var/packages/op5-nrpe-plugins-contrib/sol11repo
+#REPO="http://localhost:82"
+RECIPIENTS="uabalg"
+#RECIPIENTS="xanddah"
+NRPE_USER_SOLARIS=op5nrpe
+NRPE_UID=95118
+NRPE_GROUP_SOLARIS=nogroup
+NRPE_GID=65534
+
+
+function check_status(){
+remote=$(
+    git ls-remote -h origin master |
+    awk '{print $1}'
+)
+local=$(git rev-parse HEAD)
+
+
+if [[ $local == $remote ]]; then
+	echo "Your local git-repo $PWD on $HOSTNAME is up-to date. No need to build new packages today" | \
+	#mailx -s  "Up to date, no new package $PACKAGE built" $RECIPIENTS
+	exit 0
+else
+	git pull origin master
+fi
+}
+
+
+cd $ADIR
+check_status
+
+cd $BDIR
+mkdir -p $BDIR/opt/op5
+rsync -avh $ADIR/* $BDIR/opt/op5/plugins_contrib
+
+# Metadata
+cat << EOP >> ${CDIR}/${PACKAGE}@${VERSION}.mog
+set name=pkg.fmri value=${PACKAGE}@${VERSION}
+set name=pkg.summary value=${PACKAGE}
+set name=pkg.description value="${DESCRIPTION}"
+set name=variant.arch value=\$(ARCH)
+set name=info.classification value="org.opensolaris.category.2008:Applications/System Utilities"
+depend fmri=op5-nrpe type=require
+EOP
+
+# Generate
+gfind opt/op5 -type d -not -name . -printf "dir mode=%m owner=${NRPE_USER_SOLARIS} group=${NRPE_GROUP_SOLARIS} path=%p \n"     >> ${CDIR}/${PACKAGE}@${VERSION}.p5m.gen
+gfind opt/op5 -type f -not -name . -printf "file %p mode=%m owner=${NRPE_USER_SOLARIS} group=${NRPE_GROUP_SOLARIS} path=%p \n" >> ${CDIR}/${PACKAGE}@${VERSION}.p5m.gen
+gfind opt/op5 -type l -not -name . -printf "link path=%h/%f target=%l \n"                                                      >> ${CDIR}/${PACKAGE}@${VERSION}.p5m.gen
+
+# Content
+#pkgmogrify -DARCH=`uname -p` ${CDIR}/${PACKAGE}@${VERSION}.p5m.gen ${CDIR}/${PACKAGE}@${VERSION}.mog | pkgfmt > ${CDIR}/${PACKAGE}@${VERSION}.p5m.mog
+pkgmogrify ${CDIR}/${PACKAGE}@${VERSION}.p5m.gen ${CDIR}/${PACKAGE}@${VERSION}.mog | pkgfmt > ${CDIR}/${PACKAGE}@${VERSION}.p5m.mog
+pkgdepend generate -md ${BDIR} ${CDIR}/${PACKAGE}@${VERSION}.p5m.mog | pkgfmt > ${CDIR}/${PACKAGE}@${VERSION}.p5m.dep
+pkgdepend resolve -m ${CDIR}/${PACKAGE}@${VERSION}.p5m.dep
+
+# Publish
+ pkglint -c /var/tmp/lint-cache -r http://pkg.oracle.com/solaris/release ${CDIR}/${PACKAGE}@${VERSION}.p5m.dep.res
+pkgsend publish -s ${REPO} -d ${BDIR} ${CDIR}/${PACKAGE}@${VERSION}.p5m.dep.res
+echo "Wrote ${CDIR}/${PACKAGE}@${VERSION}.p5m.dep.res and Proto ${BDIR}"
+
+rsync -ah $REPO/* $REMREPO
+
+MESSAGE="
+The following packages have been built for your convenience:
+
+${PACKAGE}@${VERSION}
+
+It had been published to  ${REPO}
+"
+
+echo "$MESSAGE"  | mailx -s "New IPS  $PACKAGE build" $RECIPIENTS
+
+cd
+rm -rf $BDIR $CDIR

@@ -1,0 +1,120 @@
+#!/bin/bash
+#set -eof
+
+
+BASEDIR=$HOME
+
+
+PKGDIR=$BASEDIR/paket
+#VERSION=$(date  +%Y%m%d)
+VERSION=$(date +%Y%m%d)-$(($(date +%-H)*60 + $(date +%M) ))
+PACKAGE=op5-nrpe-plugins-contrib
+ADIR=$BASEDIR/puppet/plugins_contrib/stockholm/plugins
+BDIR=$(mktemp -d)
+mkdir -p ${BDIR}/latest
+#RECIPIENTS="uabalg xanddah"
+RECIPIENTS="xanddah"
+OUTHOST=esekilxxen100
+OUTDIR=/proj/kiadm/prod/var/packages/op5-nrpe-plugins-contrib
+XUSER=op5nrpe
+LXGROUP=nfsnobody
+UXGROUP=nogroup
+OWNDIR=/opt/op5/plugins-contrib
+
+[  -d $OUTDIR ]  || ssh $OUTHOST mkdir -p $OUTDIR
+
+
+
+
+function check_status(){
+remote=$(
+    git ls-remote -h origin master |
+    awk '{print $1}'
+)
+local=$(git rev-parse HEAD)
+
+
+if [[ $local == $remote ]]; then
+	echo "Your local git-repo $PWD on $HOSTNAME is up-to date. No need to build new packages today" | \
+	mailx -s  "Up to date, no new package $PACKAGE built" $RECIPIENTS
+	exit 0
+else 
+	git pull origin master
+fi
+}
+
+
+cd $ADIR
+check_status
+#git pull origin master
+
+cd $BDIR
+mkdir -p $BDIR/opt/op5
+rsync -avh $ADIR/* $BDIR/opt/op5/plugins-contrib
+
+for i in solaris deb rpm  
+do  
+	case $i in
+		solaris)
+			XGROUP=$UXGROUP
+			;;
+		*)
+			XGROUP=$LXGROUP
+			;;
+	esac
+
+	#fpm -a all  -t $i -s dir -n $PACKAGE -v $VERSION   --$i-user $XUSER --$i-group $XGROUP opt
+	fpm --$i-user $XUSER --$i-group $XGROUP --directories $OWNDIR -f -a all  -t $i -s dir -n $PACKAGE -v $VERSION   opt
+	#fpm --$i-user $XUSER --$i-group $XGROUP -f -a all  -t $i -s dir -n $PACKAGE -v $VERSION   opt
+done
+
+for i in *rpm
+do
+	j="${i/-1.noarch.rpm/.noarch.rpm}"
+	mv "$i" "$j"
+	cp "$j" "$BDIR/latest/${PACKAGE}.noarch.rpm"
+	
+done
+
+for i in *deb
+do
+	cp $i "$BDIR/latest/${PACKAGE}_all.deb"
+done
+
+#echo $BDIR
+#exit 0
+
+for PKG in *solaris
+do
+	mv $PKG  ${PKG%.*}_$VERSION.pkg
+	cp ${PKG%.*}_$VERSION.pkg "$BDIR/latest/${PACKAGE}.pkg"
+done
+
+scp *rpm *deb *pkg $OUTHOST:$OUTDIR
+scp $BDIR/latest/* $OUTHOST:$OUTDIR/latest
+
+
+PACKAGES=$(ls -1 *rpm *deb *pkg)
+
+MESSAGE="
+The following packages have been built for your convenience:
+
+$PACKAGES
+
+
+They have beeen placed in 
+
+$(
+for i in $PACKAGES
+do
+	echo $OUTDIR/$i
+done
+)
+
+You will find non-versioned packages for production in $OUTDIR/latest/
+"
+
+echo "$MESSAGE" | mailx -s "New $PACKAGE build" $RECIPIENTS
+ 
+cd
+rm -rf $BDIR

@@ -1,0 +1,78 @@
+#!/bin/bash
+#set -eof
+
+
+BASEDIR=$HOME
+
+
+PKGDIR=$BASEDIR/paket
+#VERSION=$(date  +%Y%m%d)
+VERSION=$(date +%Y%m%d)-$(($(date +%-H)*60 + $(date +%M) ))
+PACKAGE=op5-monitor-custom
+ADIR=$BASEDIR/puppet/op5-monitor-custom/stockholm/monitor_scripts/
+BDIR=$(mktemp -d)
+RECIPIENTS="uabalg xanddah"
+#RECIPIENTS="xanddah"
+OUTHOST=esekilxxen100
+OUTDIR=/proj/kiadm/prod/var/packages/$PACKAGE
+XUSER=op5nrpe
+XGROUP=nfsnobody
+PLUGDIR=/opt/plugins
+
+[  -d $OUTDIR ]  || ssh $OUTHOST mkdir -p $OUTDIR
+
+
+
+
+function check_status(){
+remote=$(
+    git ls-remote -h origin master |
+    awk '{print $1}'
+)
+local=$(git rev-parse HEAD)
+
+
+if [[ $local == $remote ]]; then
+	echo "Your local git-repo $PWD on $HOSTNAME is up-to date. No need to build new packages today" | \
+	mailx -s  "Up to date, no new package $PACKAGE built" $RECIPIENTS
+	exit 0
+else 
+	git pull origin master
+fi
+}
+
+
+cd $ADIR
+check_status
+
+cd $BDIR
+mkdir -p $BDIR/$PLUGDIR
+rsync -avh $ADIR/* $BDIR/$PLUGDIR/contrib
+
+#fpm -a all  -t rpm -s dir -n $PACKAGE -v $VERSION opt
+fpm --rpm-user $XUSER --rpm-group $XGROUP -a all  -t rpm -s dir -n $PACKAGE -v $VERSION   opt
+
+for i in *rpm
+do
+	mv "$i" "${i/-1.noarch.rpm/.noarch.rpm}"
+done
+
+
+
+scp *rpm  $OUTHOST:$OUTDIR
+
+RPM=$(ls -1 *rpm )
+
+MESSAGE="
+The following package has been built for your convenience:
+
+$RPM
+
+
+It has  beeen placed in $OUTDIR/$RPM
+"
+
+echo "$MESSAGE" | mailx -s "New $PACKAGE build" $RECIPIENTS
+ 
+cd
+rm -rf $BDIR
